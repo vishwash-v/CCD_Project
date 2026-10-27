@@ -32,7 +32,4 @@ services:
         destination: /index.html
     envVars:
       - key: VITE_API_URL
-        fromService:
-          type: web
-          name: campus-backend
-          property: host
+        value: https://campus-backend-zlh4.onrender.com
