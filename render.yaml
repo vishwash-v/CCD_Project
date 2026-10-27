@@ -1,0 +1,39 @@
+services:
+  # Backend Web Service (FastAPI + IBM Cloudant)
+  - type: web
+    name: campus-backend
+    runtime: python
+    rootDir: campus-resource-platform/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    plan: free
+    envVars:
+      - key: CLOUDANT_URL
+        value: https://64231462-458e-437c-b23a-f480fedaa0bb-bluemix.cloudantnosqldb.appdomain.cloud
+      - key: CLOUDANT_APIKEY
+        value: W2hhzTUo0MvHSIRJUMPppjQEmHigFR6ro0aTVKoTj_fn
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: APP_ENV
+        value: production
+
+  # Frontend Static Site (React + Vite)
+  - type: web
+    name: campus-frontend
+    runtime: static
+    rootDir: campus-resource-platform/frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    plan: free
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: campus-backend
+          property: host
