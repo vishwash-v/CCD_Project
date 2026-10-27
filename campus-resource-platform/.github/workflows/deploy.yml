@@ -1,0 +1,162 @@
+# ═══════════════════════════════════════════════════════════
+# CI/CD Pipeline — GitHub Actions → IBM Cloud Code Engine
+# Automatically builds & deploys on push to main branch
+# ═══════════════════════════════════════════════════════════
+
+name: Deploy to IBM Cloud
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  IBM_CLOUD_API_KEY: ${{ secrets.IBM_CLOUD_API_KEY }}
+  IBM_CLOUD_REGION: us-south
+  CE_PROJECT: campus-resource-platform
+  BACKEND_APP: campus-backend
+  FRONTEND_APP: campus-frontend
+  REGISTRY: us.icr.io
+  REGISTRY_NAMESPACE: campus-platform
+
+jobs:
+  # ── Run Tests ─────────────────────────────────────────
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      - name: Run backend tests
+        run: |
+          cd backend
+          python -m pytest tests/ -v
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+
+  # ── Deploy (only on main branch push) ────────────────
+  deploy:
+    name: Deploy to IBM Cloud Code Engine
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install IBM Cloud CLI
+      - name: Install IBM Cloud CLI
+        run: |
+          curl -fsSL https://clis.cloud.ibm.com/install/linux | sh
+          ibmcloud plugin install code-engine
+          ibmcloud plugin install container-registry
+
+      # Login to IBM Cloud
+      - name: Login to IBM Cloud
+        run: |
+          ibmcloud login --apikey "$IBM_CLOUD_API_KEY" -r "$IBM_CLOUD_REGION"
+          ibmcloud cr login
+
+      # Build & Push Backend Image
+      - name: Build and push backend image
+        run: |
+          docker build -t $REGISTRY/$REGISTRY_NAMESPACE/$BACKEND_APP:${{ github.sha }} ./backend
+          docker tag $REGISTRY/$REGISTRY_NAMESPACE/$BACKEND_APP:${{ github.sha }} $REGISTRY/$REGISTRY_NAMESPACE/$BACKEND_APP:latest
+          docker push $REGISTRY/$REGISTRY_NAMESPACE/$BACKEND_APP:${{ github.sha }}
+          docker push $REGISTRY/$REGISTRY_NAMESPACE/$BACKEND_APP:latest
+
+      # Build & Push Frontend Image
+      - name: Build and push frontend image
+        run: |
+          docker build \
+            --build-arg VITE_API_URL=https://$BACKEND_APP.$IBM_CLOUD_REGION.codeengine.appdomain.cloud \
+            -t $REGISTRY/$REGISTRY_NAMESPACE/$FRONTEND_APP:${{ github.sha }} \
+            ./frontend
+          docker tag $REGISTRY/$REGISTRY_NAMESPACE/$FRONTEND_APP:${{ github.sha }} $REGISTRY/$REGISTRY_NAMESPACE/$FRONTEND_APP:latest
+          docker push $REGISTRY/$REGISTRY_NAMESPACE/$FRONTEND_APP:${{ github.sha }}
+          docker push $REGISTRY/$REGISTRY_NAMESPACE/$FRONTEND_APP:latest
+
+      # Select Code Engine Project
+      - name: Select Code Engine project
+        run: |
+          ibmcloud ce project select --name "$CE_PROJECT" || \
+          ibmcloud ce project create --name "$CE_PROJECT"
+
+      # Deploy Backend
+      - name: Deploy backend to Code Engine
+        run: |
+          ibmcloud ce app update --name $BACKEND_APP \
+            --image $REGISTRY/$REGISTRY_NAMESPACE/$BACKEND_APP:${{ github.sha }} \
+            --port 8000 \
+            --min-scale 0 \
+            --max-scale 3 \
+            --cpu 0.25 \
+            --memory 0.5G \
+            --env APP_ENV=production \
+            --env CLOUDANT_URL=${{ secrets.CLOUDANT_URL }} \
+            --env CLOUDANT_APIKEY=${{ secrets.CLOUDANT_APIKEY }} \
+            --env JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY }} \
+          || \
+          ibmcloud ce app create --name $BACKEND_APP \
+            --image $REGISTRY/$REGISTRY_NAMESPACE/$BACKEND_APP:${{ github.sha }} \
+            --port 8000 \
+            --min-scale 0 \
+            --max-scale 3 \
+            --cpu 0.25 \
+            --memory 0.5G \
+            --env APP_ENV=production \
+            --env CLOUDANT_URL=${{ secrets.CLOUDANT_URL }} \
+            --env CLOUDANT_APIKEY=${{ secrets.CLOUDANT_APIKEY }} \
+            --env JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY }}
+
+      # Deploy Frontend
+      - name: Deploy frontend to Code Engine
+        run: |
+          ibmcloud ce app update --name $FRONTEND_APP \
+            --image $REGISTRY/$REGISTRY_NAMESPACE/$FRONTEND_APP:${{ github.sha }} \
+            --port 80 \
+            --min-scale 0 \
+            --max-scale 3 \
+            --cpu 0.25 \
+            --memory 0.5G \
+          || \
+          ibmcloud ce app create --name $FRONTEND_APP \
+            --image $REGISTRY/$REGISTRY_NAMESPACE/$FRONTEND_APP:${{ github.sha }} \
+            --port 80 \
+            --min-scale 0 \
+            --max-scale 3 \
+            --cpu 0.25 \
+            --memory 0.5G
+
+      # Print deployment URLs
+      - name: Get deployment URLs
+        run: |
+          echo "=== Deployment Complete ==="
+          echo "Backend URL:"
+          ibmcloud ce app get --name $BACKEND_APP --output url
+          echo "Frontend URL:"
+          ibmcloud ce app get --name $FRONTEND_APP --output url

@@ -1,0 +1,58 @@
+# ═══════════════════════════════════════════════════════════
+# Docker Compose — Local Development
+# Runs Frontend + Backend + CouchDB (Cloudant-compatible)
+# ═══════════════════════════════════════════════════════════
+
+services:
+  # ── CouchDB (local Cloudant replacement) ────────────────
+  couchdb:
+    image: couchdb:3
+    container_name: campus-couchdb
+    environment:
+      COUCHDB_USER: admin
+      COUCHDB_PASSWORD: password
+    ports:
+      - "5984:5984"
+    volumes:
+      - couchdb_data:/opt/couchdb/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5984/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend (FastAPI) ───────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: campus-backend
+    environment:
+      APP_ENV: development
+      COUCHDB_URL: http://couchdb:5984
+      COUCHDB_USER: admin
+      COUCHDB_PASSWORD: password
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000,http://localhost:80
+      JWT_SECRET_KEY: dev-secret-key-change-in-production
+    ports:
+      - "8000:8000"
+    depends_on:
+      couchdb:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ── Frontend (React + Vite dev server) ──────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: campus-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  couchdb_data:
